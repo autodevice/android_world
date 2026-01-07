@@ -175,7 +175,16 @@ class AutoDevLLM:
 
         # Add cache_control to the last text block for Anthropic models
         # This enables prompt caching for the conversation prefix
+        # Note: Anthropic allows max 4 cache_control blocks, so we remove from previous
+        # user messages and only keep it on the latest one (plus system prompt)
         if self.is_anthropic:
+            # Remove cache_control from previous user messages
+            for msg in self.messages:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    for part in msg["content"]:
+                        if "cache_control" in part:
+                            del part["cache_control"]
+
             # Find the last text block and add cache_control
             for i in range(len(parts) - 1, -1, -1):
                 if parts[i].get("type") == "text":
