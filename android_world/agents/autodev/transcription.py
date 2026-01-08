@@ -206,6 +206,8 @@ IMPORTANT RULES:
 7. Return data in a structured format (JSON array, bullet list, or structured text)
 8. DO NOT include UI elements, buttons, or navigation - only the actual content/data
 9. Be complete - list everything visible that matches the instruction
+10. **CRITICAL - End of List Detection**: Analyze if the end of the list/screen is visible:
+    - If the end of list is clearly visible, add a note at the end: "END OF LIST REACHED - No more items below"
 
 Return the listed content in a clear, structured format that can be easily parsed."""
         

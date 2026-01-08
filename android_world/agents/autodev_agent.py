@@ -956,9 +956,16 @@ Now call report() again with your detailed summary including what you tried and 
                 all_steps_summary.append(step_desc)
         
         # Get current screen state for summary
-        current_state = self.get_post_transition_state()
-        current_screenshot = self._resize_screenshot_to_logical_size(current_state.pixels.copy())
-        current_transcription = transcribe_screen(current_screenshot)
+        try:
+            current_state = self.get_post_transition_state()
+            if current_state and current_state.pixels is not None:
+                current_screenshot = self._resize_screenshot_to_logical_size(current_state.pixels.copy())
+                current_transcription = transcribe_screen(current_screenshot)
+            else:
+                current_transcription = "No screenshot available"
+        except Exception as e:
+            self._log_print(f"⚠️  Error getting screen state for summary: {e}")
+            current_transcription = "Error getting screen state"
         
         # Make final executor LLM call to summarize all attempts (NO TOOLS - text only)
         summary_prompt = f"""You have reached the maximum number of steps ({MAX_EXECUTOR_STEPS}) while trying to: {query}

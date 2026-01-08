@@ -228,6 +228,7 @@ def extract_data(extraction_instruction: str):
     - Include all visible details (names, descriptions, dates, categories, etc.)
     - Return structured data (JSON array, bullet list, or structured text)
     - NOT filter by criteria - it just lists what's visible
+    - **Analyze if end of list is visible** (e.g., "No more items", "End of list", bottom of scrollable area reached)
     
     After getting the data, YOU filter by criteria (date ranges, categories, prep time, etc.) in your logic.
     
