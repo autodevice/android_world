@@ -322,43 +322,31 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
         state = self.get_post_transition_state()
         screenshot = self._resize_screenshot_to_logical_size(state.pixels.copy())
 
-        # Pre-transcribe screen using Haiku
-        transcription = transcribe_screen(screenshot)
-        navigation_warnings = []
+        # No automatic transcription - planner analyzes screenshot directly
+        # Planner can call get_ui_elements() tool if it needs to find buttons/icons
+        # Planner can call extract_data() tool if it needs to extract specific data
         
-        if transcription:
-            self._log_print(f"📝 Screen transcribed ({len(transcription)} chars)")
-            
-            # Check if we've seen this content BEFORE updating state (avoid revisiting)
-            if self._has_seen_content(transcription):
-                warning = "⚠️  CRITICAL: This content was seen before - you are revisiting the same screen. STOP scrolling and try a different approach (tap on items, use search, or try alternative navigation)."
-                self._log_print(warning)
-                navigation_warnings.append(warning)
-            
-            # Update navigation state AFTER checking (so we track what we've seen)
-            self._update_navigation_state(transcription, "screenshot")
-            
-            # Add scroll count warning
-            scroll_count = self.navigation_state.get("scroll_count", 0)
-            if scroll_count >= 5:
-                warning = f"⚠️  WARNING: You have scrolled {scroll_count} times. If you haven't found your target, STOP scrolling and try alternative strategies (tap items to view details, use search, or try different navigation)."
-                navigation_warnings.append(warning)
+        # Track navigation state using screenshot hash (for scroll detection)
+        screenshot_hash = hash(screenshot.tobytes())
+        if screenshot_hash in self.navigation_state.get("seen_screenshots", set()):
+            warning = "⚠️  CRITICAL: This screen was seen before - you are revisiting the same screen. STOP scrolling and try a different approach (tap on items, use search, or try alternative navigation)."
+            self._log_print(warning)
         else:
-            self._log_print("⚠️  Screen transcription failed or empty")
+            if "seen_screenshots" not in self.navigation_state:
+                self.navigation_state["seen_screenshots"] = set()
+            self.navigation_state["seen_screenshots"].add(screenshot_hash)
         
-        # Add navigation warnings to transcription
-        if navigation_warnings:
-            warning_text = "\n\n".join(navigation_warnings)
-            if transcription:
-                transcription = f"{transcription}\n\n<system_warnings>\n{warning_text}\n\n🚨 ACTION REQUIRED: You MUST stop scrolling and take a different action. Read the transcription above to extract data, or try a different approach.\n</system_warnings>"
-            else:
-                transcription = f"<system_warnings>\n{warning_text}\n\n🚨 ACTION REQUIRED: You MUST stop scrolling and take a different action.\n</system_warnings>"
+        # Add scroll count warning
+        scroll_count = self.navigation_state.get("scroll_count", 0)
+        if scroll_count >= 5:
+            warning = f"⚠️  WARNING: You have scrolled {scroll_count} times. If you haven't found your target, STOP scrolling and try alternative strategies (tap items to view details, use search, or try different navigation)."
+            self._log_print(warning)
         
         planned_step = self.planner_llm.chat(
             goal if self._step_count == 1 else None,
             screenshot,
             tools=self.planner_tools_dict,
-            transcription=transcription,
+            transcription=None,  # No automatic transcription
         )
 
         # Show simplified planner step info (not full JSON)
@@ -463,6 +451,56 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                         else:
                             self._log_print(f"⚠️ Scratchpad: Key '{res.get('key')}' not found")
                         self.planner_llm.add_tool_result(tool_call["id"], json.dumps(res))
+                    elif tool_call["function"]["name"] == "extract_data":
+                        # Handle specialized data extraction using transcription agent
+                        args = tool_call["function"]["arguments"]
+                        if isinstance(args, str):
+                            args = json.loads(args)
+                        
+                        extraction_instruction = args.get("extraction_instruction", "")
+                        state = self.get_post_transition_state()
+                        screenshot = self._resize_screenshot_to_logical_size(state.pixels.copy())
+                        
+                        from android_world.agents.autodev.transcription import extract_data_from_screen
+                        extracted_data = extract_data_from_screen(screenshot, extraction_instruction)
+                        
+                        if extracted_data:
+                            self._log_print(f"📊 Extracted data: {extracted_data[:200]}...")
+                            self.planner_llm.add_tool_result(
+                                tool_call["id"], 
+                                json.dumps({"success": True, "extracted_data": extracted_data})
+                            )
+                        else:
+                            self._log_print(f"⚠️ Data extraction failed or returned no data")
+                            self.planner_llm.add_tool_result(
+                                tool_call["id"], 
+                                json.dumps({"success": False, "error": "Extraction failed or no matching data found", "extracted_data": ""})
+                            )
+                    elif tool_call["function"]["name"] == "get_ui_elements":
+                        # Handle UI elements detection using transcription agent
+                        args = tool_call["function"]["arguments"]
+                        if isinstance(args, str):
+                            args = json.loads(args)
+                        
+                        focus = args.get("focus")
+                        state = self.get_post_transition_state()
+                        screenshot = self._resize_screenshot_to_logical_size(state.pixels.copy())
+                        
+                        from android_world.agents.autodev.transcription import get_ui_elements
+                        ui_elements = get_ui_elements(screenshot, focus)
+                        
+                        if ui_elements:
+                            self._log_print(f"🔍 UI elements found: {ui_elements[:200]}...")
+                            self.planner_llm.add_tool_result(
+                                tool_call["id"], 
+                                json.dumps({"success": True, "ui_elements": ui_elements})
+                            )
+                        else:
+                            self._log_print(f"⚠️ UI elements detection failed")
+                            self.planner_llm.add_tool_result(
+                                tool_call["id"], 
+                                json.dumps({"success": False, "error": "UI elements detection failed", "ui_elements": ""})
+                            )
                     else:
                         self.execute_step(tool_call)
                 except Exception as e:
@@ -523,6 +561,8 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
 
         # Track executor steps and results for logging
         executor_step_count = 0
+        # Track all tool calls made during execution for report enhancement
+        executor_tool_call_history = []
 
         for i in range(MAX_EXECUTOR_STEPS):
             executor_step_count += 1
@@ -561,12 +601,14 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                             x = args.get("x", "?")
                             y = args.get("y", "?")
                             tool_details.append(f"{name}({x}, {y})")
+                            executor_tool_call_history.append(f"{name}({x}, {y})")
                         elif name == "swipe":
                             x0 = args.get("x0", "?")
                             y0 = args.get("y0", "?")
                             x1 = args.get("x1", "?")
                             y1 = args.get("y1", "?")
                             tool_details.append(f"{name}({x0},{y0}→{x1},{y1})")
+                            executor_tool_call_history.append(f"{name}({x0},{y0}→{x1},{y1})")
                         elif name == "scroll":
                             direction = args.get("direction", "?")
                             x = args.get("x", "")
@@ -575,6 +617,8 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                             tool_details.append(f"{name}({direction}{coord_str})")
                         else:
                             tool_details.append(name)
+                            if name not in ["report", "extracted_data", "end"]:                           
+                                executor_tool_call_history.append(name)
                 
                 if tool_details:
                     self._log_print(f"  Executor: {', '.join(tool_details)}")
@@ -591,9 +635,63 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
 
                     # 1) Executor is done: return success back to planner
                     if fname == "report":
+                        # Before executor reports, give it tool call history to write summary
+                        if executor_tool_call_history and not hasattr(executor_llm, '_history_injected'):
+                            # Inject tool call history into executor's context before it reports
+                            history_message = f"""Before you finalize your report, here's a summary of all the tool calls you made during this subgoal:
+
+Tool calls made: {', '.join(executor_tool_call_history)}
+
+Please use this information to write a comprehensive summary in your report() notes. For example:
+- If you tapped multiple times at the same location: "I tapped 4 times at coordinates (100,200) but there's no button or element there"
+- If you scrolled multiple times: "I scrolled down 5 times but the transcription didn't change, reached the end of the list"
+- If actions didn't work: "I tried tapping the rename button at (x,y) but nothing happened, the button might not be visible or labeled differently"
+
+Now call report() again with your detailed summary including what you tried and what happened."""
+                            
+                            # Get current state for the history injection
+                            history_state = self.get_post_transition_state()
+                            history_screenshot = self._resize_screenshot_to_logical_size(history_state.pixels.copy())
+                            
+                            # Mark that we've injected history to avoid loops
+                            executor_llm._history_injected = True
+                            
+                            # Inject history as a user message to executor
+                            executor_llm.add_tool_result(exec_call["id"], "Review your tool call history and write a detailed summary in report()")
+                            
+                            # Make executor see the history before finalizing report
+                            history_response = executor_llm.chat(
+                                history_message,
+                                history_screenshot,
+                                tools=self.executor_tools_dict,
+                            )
+                            
+                            # Check if executor called report() again with summary
+                            if history_response.get("tool_calls"):
+                                for tc in history_response["tool_calls"]:
+                                    if isinstance(tc, dict):
+                                        tc_name = tc.get("function", {}).get("name")
+                                    else:
+                                        tc_name = getattr(tc, "function", {}).get("name", "") if hasattr(tc, "function") else ""
+                                    
+                                    if tc_name == "report":
+                                        # Executor called report() again with summary - use this one
+                                        tc_args = tc.get("function", {}).get("arguments", {})
+                                        if isinstance(tc_args, str):
+                                            tc_args = json.loads(tc_args)
+                                        args = tc_args  # Use the new report with summary
+                                        break
+                            
+                            # Continue to process the report below
+                        
+                        # Executor has provided report (with or without history)
                         tool_results.append(
                             {"tool_call_id": exec_call["id"], "result": args}
                         )
+                        
+                        # Send executor's report directly to planner (no enhancement)
+                        report_notes = args.get("notes", "") if isinstance(args, dict) else str(args)
+                        
                         # Only log executor step when it completes and reports back
                         if self.enable_logging:
                             final_state = self.get_post_transition_state()
@@ -615,7 +713,7 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                         )
                         self.planner_llm.add_tool_result(
                             planner_tool_call["id"],
-                            json.dumps(args),
+                            json.dumps({"notes": report_notes}),
                         )
                         return
 
@@ -657,6 +755,9 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                         tool_results.append(
                             {"tool_call_id": exec_call["id"], "result": json.dumps(res), "status": "success"}
                         )
+                        # Track scratchpad operations in history
+                        key = args.get("key", "?")
+                        executor_tool_call_history.append(f"createItem({key})")
                         continue
                     
                     if fname == "fetchItem":
@@ -669,6 +770,9 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                         tool_results.append(
                             {"tool_call_id": exec_call["id"], "result": json.dumps(res), "status": "success"}
                         )
+                        # Track scratchpad operations in history
+                        key = args.get("key", "?")
+                        executor_tool_call_history.append(f"fetchItem({key})")
                         continue
                     
                     try:
@@ -853,7 +957,8 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
         
         # Get current screen state for summary
         current_state = self.get_post_transition_state()
-        current_transcription = transcribe_screen(current_state)
+        current_screenshot = self._resize_screenshot_to_logical_size(current_state.pixels.copy())
+        current_transcription = transcribe_screen(current_screenshot)
         
         # Make final executor LLM call to summarize all attempts (NO TOOLS - text only)
         summary_prompt = f"""You have reached the maximum number of steps ({MAX_EXECUTOR_STEPS}) while trying to: {query}

@@ -1,3 +1,6 @@
+from typing import Optional
+
+
 def tap(intent: str):
     """
     Declare an intent to tap a specific UI element on the current screen.
@@ -200,5 +203,69 @@ def finish_task(success: bool):
 
     Parameters:
         success (bool): Whether the agent believes the task was completed.
+    """
+    pass
+
+
+def extract_data(extraction_instruction: str):
+    """
+    List and extract visible content from the current screen.
+    
+    Use this tool to list/transcribe visible content. The tool lists everything visible without filtering.
+    YOU (the planner) handle filtering by criteria after getting the data.
+    
+    Examples of extraction_instruction:
+      - "list all recipes on screen" - Lists all recipes visible with their details gievn
+      - "list all items in file that can be seen on screen" - Lists all items visible in the file
+      - "extract whole content of file" - Transcribes all text content visible in the open file
+      - "list all activities on screen" - Lists all activities visible with their details
+      - "list all tasks on screen" - Lists all tasks visible with their details
+      - extract all text on screen of the current file
+      - extract all text on screen of the current item
+    
+    The extraction agent will:
+    - List ALL visible items/content matching the instruction
+    - Include all visible details (names, descriptions, dates, categories, etc.)
+    - Return structured data (JSON array, bullet list, or structured text)
+    - NOT filter by criteria - it just lists what's visible
+    
+    After getting the data, YOU filter by criteria (date ranges, categories, prep time, etc.) in your logic.
+    
+    Parameters:
+        extraction_instruction (str): Instruction on what to list/extract (e.g., "list all recipes on screen", "extract whole content of file")
+    """
+    pass
+
+
+def get_ui_elements(focus: Optional[str] = None):
+    """
+    Get UI elements, buttons, icons, and interactive elements from the current screen.
+    
+    Use this tool when you need to find UI elements like buttons, icons, text fields, etc.
+    This is focused on UI elements for navigation and interaction, NOT data extraction.
+    
+    Call this tool when:
+    - You cannot find a button, icon, or UI element in the screenshot
+    - You need to identify action bar buttons (rename, edit, delete, save icons)
+    - You need to find navigation elements (tabs, menu items, back buttons)
+    - You need to locate text fields or input elements
+    - You need to find interactive elements (checkboxes, switches, sliders)
+    
+    The tool will return:
+    - All buttons with their labels or icons
+    - All icons (especially action bar icons, menu icons)
+    - All text fields and input elements
+    - All interactive elements
+    - Their approximate locations and functions
+    
+    Examples of focus:
+      - "action bar" - Focus on top action bar buttons/icons
+      - "bottom navigation" - Focus on bottom navigation elements
+      - "menu items" - Focus on menu or list items
+      - "rename button" - Focus on finding rename/edit buttons
+      - None - Get all UI elements on screen
+    
+    Parameters:
+        focus (str, optional): Optional focus area to narrow down the search (e.g., "action bar", "bottom navigation", "rename button")
     """
     pass
