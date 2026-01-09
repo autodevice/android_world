@@ -433,6 +433,10 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                         self.planner_llm.add_tool_result(
                             tool_call["id"], json.dumps({"success": True, "task_completed": True})
                         )
+                        # Print planner cache statistics summary at end of conversation
+                        if self.planner_llm.is_anthropic:
+                            self._log_print("📊 Planner LLM Cache Stats:")
+                            self.planner_llm.print_cache_summary()
                         if self.enable_logging:
                             # Note: success will be determined by task.is_successful() in the runner
                             self.logger.end_run(status="completed", success=None)
@@ -617,6 +621,10 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                             planner_tool_call["id"],
                             json.dumps(args),
                         )
+                        # Print executor cache stats at end of session
+                        if executor_llm.is_anthropic:
+                            self._log_print(f"📊 Executor Session Cache Stats:")
+                            executor_llm.print_cache_summary()
                         return
 
                     # 2) Executor extracted data: return that back to planner
@@ -647,6 +655,10 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                             planner_tool_call["id"],
                             json.dumps(args),
                         )
+                        # Print executor cache stats at end of session
+                        if executor_llm.is_anthropic:
+                            self._log_print(f"📊 Executor Session Cache Stats:")
+                            executor_llm.print_cache_summary()
                         return
                     
                     # 3) Scratchpad operations
@@ -763,6 +775,10 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                                     planner_tool_call["id"],
                                     json.dumps({"status": "failed", "error": error_msg}),
                                 )
+                                # Print executor cache stats at end of session
+                                if executor_llm.is_anthropic:
+                                    self._log_print(f"📊 Executor Session Cache Stats:")
+                                    executor_llm.print_cache_summary()
                                 return
                         else:
                             raise
@@ -795,6 +811,10 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                             planner_tool_call["id"],
                             json.dumps({"status": "failed", "error": error_msg}),
                         )
+                        # Print executor cache stats at end of session
+                        if executor_llm.is_anthropic:
+                            self._log_print(f"📊 Executor Session Cache Stats:")
+                            executor_llm.print_cache_summary()
                         return
 
             else:
@@ -825,6 +845,10 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                     planner_tool_call["id"],
                     json.dumps({"status": execution_step["content"]}),
                 )
+                # Print executor cache stats at end of session
+                if executor_llm.is_anthropic:
+                    self._log_print(f"📊 Executor Session Cache Stats:")
+                    executor_llm.print_cache_summary()
                 return
         
         # If we reach here, max executor steps were reached without completion
@@ -923,6 +947,10 @@ Do NOT make any tool calls - just provide a detailed text summary explaining eve
                 "query": query
             }),
         )
+        # Print executor cache stats at end of session
+        if executor_llm.is_anthropic:
+            self._log_print(f"📊 Executor Session Cache Stats:")
+            executor_llm.print_cache_summary()
 
     def reset(self, go_home: bool = False) -> None:
         """Reset the agent."""
