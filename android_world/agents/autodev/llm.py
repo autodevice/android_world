@@ -32,6 +32,14 @@ class ChatResponse(TypedDict):
     tool_calls: Optional[List[ToolCall]]
 
 
+class CacheStats(TypedDict):
+    """Statistics for prompt cache usage."""
+
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    total_requests: int
+
+
 class AutoDevLLM:
     """Simple LLM wrapper with conversation history and tool calls."""
 
@@ -70,6 +78,11 @@ class AutoDevLLM:
         self.scratchpad = scratchpad if scratchpad is not None else Scratchpad()
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+
+        # Cache statistics tracking
+        self._cache_read_tokens: int = 0
+        self._cache_creation_tokens: int = 0
+        self._total_requests: int = 0
 
     def _is_retryable_error(self, error: Exception) -> bool:
         """Check if an error is retryable (transient failures).
@@ -150,33 +163,18 @@ class AutoDevLLM:
 
         if user_message:  # only add if not None/empty
             parts.append({"type": "text", "text": user_message})
-        
+
         # Add transcription if available
         if transcription:
             parts.append({
                 "type": "text",
                 "text": f"<screen_transcription>\n{transcription}\n</screen_transcription>"
             })
-        
-        image_data = self._encode_image(screenshot)
-        parts.append(
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{image_data}",
-                    # you probably don't need 'format' here, the data URL covers it
-                },
-            }
-        )
-        if self.todo_list_enabled:
-            parts.append({"type": "text", "text": self.todo_list.get_system_reminder()})
-        # Always add scratchpad reminder (like todos, it shows empty state message if empty)
-        parts.append({"type": "text", "text": self.scratchpad.get_system_reminder()})
 
-        # Add cache_control to the last text block for Anthropic models
-        # This enables prompt caching for the conversation prefix
-        # Note: Anthropic allows max 4 cache_control blocks, so we remove from previous
-        # user messages and only keep it on the latest one (plus system prompt)
+        # Add cache_control to the last text block BEFORE the image for Anthropic models
+        # This ensures the cached prefix doesn't include the image, which gets removed
+        # from history later via _remove_image_blocks_from_history(). If we cached
+        # after the image, the cache would be invalidated when the image is stripped.
         if self.is_anthropic:
             # Remove cache_control from previous user messages
             for msg in self.messages:
@@ -185,11 +183,25 @@ class AutoDevLLM:
                         if "cache_control" in part:
                             del part["cache_control"]
 
-            # Find the last text block and add cache_control
-            for i in range(len(parts) - 1, -1, -1):
-                if parts[i].get("type") == "text":
-                    parts[i]["cache_control"] = {"type": "ephemeral"}
-                    break
+            # Add cache_control to the last text part before image (if any)
+            if parts:
+                parts[-1]["cache_control"] = {"type": "ephemeral"}
+
+        # Add the image (not part of cached prefix since it gets removed from history)
+        image_data = self._encode_image(screenshot)
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{image_data}",
+                },
+            }
+        )
+
+        # Add remaining text parts after image
+        if self.todo_list_enabled:
+            parts.append({"type": "text", "text": self.todo_list.get_system_reminder()})
+        parts.append({"type": "text", "text": self.scratchpad.get_system_reminder()})
 
         self.messages.append({"role": "user", "content": parts})
 
@@ -230,6 +242,10 @@ class AutoDevLLM:
             try:
                 response = litellm.completion(**kwargs)
                 assistant_message = response.choices[0].message
+
+                # Track cache statistics from response (Anthropic-specific)
+                self._total_requests += 1
+                self._log_cache_stats(response)
 
                 content = assistant_message.content
 
@@ -297,6 +313,66 @@ class AutoDevLLM:
                     for part in message["content"]
                     if part.get("type") != "image_url"
                 ]
+
+    def _log_cache_stats(self, response: Any) -> None:
+        """Extract and log cache statistics from the LLM response.
+
+        For Anthropic models, the response includes:
+        - cache_creation_input_tokens: tokens written to cache
+        - cache_read_input_tokens: tokens read from cache
+        """
+        if not self.is_anthropic:
+            return
+
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+
+        # Extract cache tokens from usage (LiteLLM passes these through)
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+
+        self._cache_read_tokens += cache_read
+        self._cache_creation_tokens += cache_creation
+
+        # Log cache stats for this request
+        if cache_read > 0 or cache_creation > 0:
+            print(
+                f"📦 Cache: read={cache_read:,} tokens, "
+                f"created={cache_creation:,} tokens"
+            )
+        else:
+            print("📦 Cache: no cache hit (tokens not in cache or caching disabled)")
+
+    def get_cache_stats(self) -> CacheStats:
+        """Get cumulative cache statistics for this session.
+
+        Returns:
+            CacheStats with total cache_read_tokens, cache_creation_tokens,
+            and total_requests.
+        """
+        return CacheStats(
+            cache_read_tokens=self._cache_read_tokens,
+            cache_creation_tokens=self._cache_creation_tokens,
+            total_requests=self._total_requests,
+        )
+
+    def print_cache_summary(self) -> None:
+        """Print a summary of cache usage for the session."""
+        stats = self.get_cache_stats()
+        print("\n" + "=" * 50)
+        print("📊 Prompt Cache Summary")
+        print("=" * 50)
+        print(f"Total requests:        {stats['total_requests']}")
+        print(f"Total tokens read:     {stats['cache_read_tokens']:,}")
+        print(f"Total tokens created:  {stats['cache_creation_tokens']:,}")
+        if stats["cache_read_tokens"] > 0:
+            # Anthropic charges 10% for cache reads vs 100% for cache creation
+            savings_pct = (stats["cache_read_tokens"] * 0.9) / (
+                stats["cache_read_tokens"] + stats["cache_creation_tokens"]
+            ) * 100 if (stats["cache_read_tokens"] + stats["cache_creation_tokens"]) > 0 else 0
+            print(f"Estimated savings:     ~{savings_pct:.1f}% on cached tokens")
+        print("=" * 50 + "\n")
 
     def clear_history(self) -> None:
         """Clear conversation history but keep system prompt."""
