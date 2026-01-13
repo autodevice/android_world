@@ -31,6 +31,8 @@ from android_world import registry
 from android_world.agents import autodev_agent
 from android_world.env import env_launcher
 from android_world.task_evals import task_eval
+from android_world.task_evals.information_retrieval import information_retrieval
+from android_world.task_evals.information_retrieval import proto_utils
 
 logging.set_verbosity(logging.WARNING)
 
@@ -103,6 +105,14 @@ def _main() -> None:
   params = task_type.generate_random_params()
   task = task_type(params)
   task.initialize_task(env)
+  
+  # Print expected answer if this is an InformationRetrieval task
+  if isinstance(task, information_retrieval.InformationRetrieval):
+    try:
+      expected_answer = proto_utils.get_expected_answer(task.task)
+      print(f'Expected answer: {expected_answer}')
+    except Exception as e:
+      print(f'Could not get expected answer: {e}')
   
   # Use AutoDev agent with logging enabled
   task_name = task_type.__name__
