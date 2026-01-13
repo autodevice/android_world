@@ -143,17 +143,6 @@ def go_back():
     """
     pass
 
-
-def clear_text():
-    """
-    Declare an intent to clear the text in the currently focused input field.
-
-    The executor will determine how to clear the text (e.g., selecting all and
-    deleting, tapping the clear icon, or issuing repeated delete commands).
-    """
-    pass
-
-
 def type_text(text: str, intent: str):
     """
     Declare an intent to type a specific string into a specific semantic field.

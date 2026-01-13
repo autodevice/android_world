@@ -396,42 +396,6 @@ class TestRunLogger:
         if not self.run_metadata:
             return
         
-        # Check if this is a contact task and log debugging info
-        if hasattr(task, 'params') and 'name' in task.params:
-            try:
-                from android_world.utils import contacts_utils
-                expected_name = task.params['name']
-                expected_number = contacts_utils.clean_phone_number(task.params.get('number', ''))
-                actual_contacts = contacts_utils.list_contacts(env.controller)
-                
-                debug_info = {
-                    "expected_name": expected_name,
-                    "expected_number": expected_number,
-                    "actual_contacts": [
-                        {"name": c.name, "number": c.number}
-                        for c in actual_contacts
-                    ],
-                    "success_score": success_score,
-                }
-                
-                # Save to validation_debug.json
-                if self.current_run_dir:
-                    debug_path = self.current_run_dir / "validation_debug.json"
-                    with open(debug_path, "w") as f:
-                        json.dump(debug_info, f, indent=2)
-                
-                # Print debugging info
-                print(f"\n🔍 Validation Debug:")
-                print(f"   Expected: {expected_name} ({expected_number})")
-                print(f"   Found {len(actual_contacts)} contact(s):")
-                for contact in actual_contacts:
-                    match_name = "✅" if contact.name == expected_name else "❌"
-                    match_num = "✅" if contact.number == expected_number else "❌"
-                    print(f"     {match_name} Name: '{contact.name}' | {match_num} Number: '{contact.number}'")
-                print(f"   Success score: {success_score}")
-                
-            except Exception as e:
-                print(f"Warning: Could not log validation debug info: {e}")
 
     def end_run(
         self,
