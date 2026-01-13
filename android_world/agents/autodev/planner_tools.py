@@ -202,3 +202,25 @@ def finish_task(success: bool):
         success (bool): Whether the agent believes the task was completed.
     """
     pass
+
+
+def transcribe_screen():
+    """
+    Transcribe all text and UI elements visible on the current screen.
+    
+    This tool provides a complete transcription of the current screen, including:
+    - All visible text content
+    - UI elements (buttons, icons, text fields, etc.)
+    - Labels and descriptions
+    - Any other readable content
+    
+    Use this when you need to:
+    - Read file content
+    - Extract list items
+    - Understand the current screen state
+    - Find UI elements and their labels
+    
+    Returns:
+        A complete transcription of the current screen as a string.
+    """
+    pass

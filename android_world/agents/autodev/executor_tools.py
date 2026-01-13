@@ -308,6 +308,28 @@ def extracted_data(data: str):
     """
 
 
+def transcribe_screen() -> str:
+    """Transcribe all text and UI elements visible on the current screen.
+    
+    This tool provides a complete transcription of the current screen, including:
+    - All visible text content
+    - UI elements (buttons, icons, text fields, etc.)
+    - Labels and descriptions
+    - Any other readable content
+    
+    Use this when you need to:
+    - Read file content
+    - Extract list items
+    - Read form fields, search results, or any text on screen
+    - Find UI elements and their labels (buttons, icons, text fields)
+    - Understand the current screen state
+    
+    Returns:
+        A complete transcription of the current screen as a string.
+    """
+    pass
+
+
 def report(notes: str):
     """Reports what it has achieved of current conversation objectives.
 

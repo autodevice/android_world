@@ -31,6 +31,12 @@ class ChatResponse(TypedDict):
     content: Optional[str]
     tool_calls: Optional[List[ToolCall]]
 
+class CacheStats(TypedDict):
+    """Statistics for prompt cache usage."""
+
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    total_requests: int
 
 class AutoDevLLM:
     """Simple LLM wrapper with conversation history and tool calls."""
@@ -70,6 +76,10 @@ class AutoDevLLM:
         self.scratchpad = scratchpad if scratchpad is not None else Scratchpad()
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        # Cache statistics tracking
+        self._cache_read_tokens: int = 0
+        self._cache_creation_tokens: int = 0
+        self._total_requests: int = 0
 
     def _is_retryable_error(self, error: Exception) -> bool:
         """Check if an error is retryable (transient failures).
@@ -157,7 +167,25 @@ class AutoDevLLM:
                 "type": "text",
                 "text": f"<screen_transcription>\n{transcription}\n</screen_transcription>"
             })
+
         
+        # Add cache_control to the last text block BEFORE the image for Anthropic models
+        # This ensures the cached prefix doesn't include the image, which gets removed
+        # from history later via _remove_image_blocks_from_history(). If we cached
+        # after the image, the cache would be invalidated when the image is stripped.
+        if self.is_anthropic:
+            # Remove cache_control from previous user messages
+            for msg in self.messages:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    for part in msg["content"]:
+                        if "cache_control" in part:
+                            del part["cache_control"]
+
+            # Add cache_control to the last text part before image (if any)
+            if parts:
+                parts[-1]["cache_control"] = {"type": "ephemeral"}
+
+        # Add the image (not part of cached prefix since it gets removed from history)
         image_data = self._encode_image(screenshot)
         parts.append(
             {
@@ -172,6 +200,23 @@ class AutoDevLLM:
             parts.append({"type": "text", "text": self.todo_list.get_system_reminder()})
         # Always add scratchpad reminder (like todos, it shows empty state message if empty)
         parts.append({"type": "text", "text": self.scratchpad.get_system_reminder()})
+        # Add cache_control to the last text block for Anthropic models
+        # This enables prompt caching for the conversation prefix
+        # Note: Anthropic allows max 4 cache_control blocks, so we remove from previous
+        # user messages and only keep it on the latest one (plus system prompt)
+        if self.is_anthropic:
+            # Remove cache_control from previous user messages
+            for msg in self.messages:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    for part in msg["content"]:
+                        if "cache_control" in part:
+                            del part["cache_control"]
+
+            # Find the last text block and add cache_control
+            for i in range(len(parts) - 1, -1, -1):
+                if parts[i].get("type") == "text":
+                    parts[i]["cache_control"] = {"type": "ephemeral"}
+                    break
         self.messages.append({"role": "user", "content": parts})
 
         kwargs: Dict[str, Any] = {

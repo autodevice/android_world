@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import datetime
 from typing import Optional, Dict, Any
 
 import cv2
@@ -28,6 +29,7 @@ from android_world.agents.autodev.util import (
 )
 from android_world.env import interface
 from android_world.env.json_action import JSONAction
+from android_world.env import adb_utils
 
 # Load environment variables from .env file
 load_dotenv()
@@ -82,8 +84,8 @@ def _get_planner_model(task_difficulty: Optional[str]) -> str:
         Model name string for the planner LLM
     """
     if task_difficulty in ("easy", "medium"):
-        # return "anthropic/claude-sonnet-4-5-20250929"
-        return "anthropic/claude-haiku-4-5-20251001"
+        return "anthropic/claude-sonnet-4-5-20250929"
+        # return "anthropic/claude-haiku-4-5-20251001"
         # return "openai/gpt-5.2"
         # return "gemini/gemini-3-pro-preview"
     else:
@@ -206,6 +208,26 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
             "text": transcription[:500],  # First 500 chars for comparison
         }
     
+    def _get_current_device_date(self) -> str:
+        """Get current date/time from Android device."""
+        try:
+            if hasattr(self.env, 'controller'):
+                # Get date from device via ADB
+                date_output = adb_utils.issue_generic_request(
+                    ['shell', 'date'], self.env.controller
+                ).generic.output.decode().strip()
+                # Parse: "Sun Oct 15 17:04:16 UTC 2023"
+                current_time = datetime.datetime.strptime(
+                    date_output, '%a %b %d %H:%M:%S %Z %Y'
+                )
+                # Format as readable date
+                return current_time.strftime('%Y-%m-%d (%A, %B %d, %Y)')
+        except Exception as e:
+            self._log_print(f"⚠️  Could not get device date: {e}")
+            # Fallback to system date
+            return datetime.datetime.now().strftime('%Y-%m-%d (%A, %B %d, %Y)')
+        return datetime.datetime.now().strftime('%Y-%m-%d (%A, %B %d, %Y)')
+    
     def _has_seen_content(self, transcription: Optional[str]) -> bool:
         """Check if we've seen this content before (to avoid revisiting)."""
         if not transcription:
@@ -314,7 +336,7 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                 scale=self.scale,
                 logical_screen_size=self.env.logical_screen_size,
                 planner_model=self.planner_llm.model,
-                executor_model="anthropic/claude-sonnet-4-5-20250929",
+                executor_model="anthropic/claude-haiku-4-5-20251001",
                 agent_name="autodev",
             )
             self._log_print(f"📝 Logging enabled. Run ID: {run_id}")
@@ -322,43 +344,50 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
         state = self.get_post_transition_state()
         screenshot = self._resize_screenshot_to_logical_size(state.pixels.copy())
 
-        # Pre-transcribe screen using Haiku
-        transcription = transcribe_screen(screenshot)
+        # Track navigation state using screenshot hash (for scroll detection)
+        screenshot_hash = hash(screenshot.tobytes())
         navigation_warnings = []
         
-        if transcription:
-            self._log_print(f"📝 Screen transcribed ({len(transcription)} chars)")
-            
-            # Check if we've seen this content BEFORE updating state (avoid revisiting)
-            if self._has_seen_content(transcription):
-                warning = "⚠️  CRITICAL: This content was seen before - you are revisiting the same screen. STOP scrolling and try a different approach (tap on items, use search, or try alternative navigation)."
-                self._log_print(warning)
-                navigation_warnings.append(warning)
-            
-            # Update navigation state AFTER checking (so we track what we've seen)
-            self._update_navigation_state(transcription, "screenshot")
-            
-            # Add scroll count warning
-            scroll_count = self.navigation_state.get("scroll_count", 0)
-            if scroll_count >= 5:
-                warning = f"⚠️  WARNING: You have scrolled {scroll_count} times. If you haven't found your target, STOP scrolling and try alternative strategies (tap items to view details, use search, or try different navigation)."
-                navigation_warnings.append(warning)
-        else:
-            self._log_print("⚠️  Screen transcription failed or empty")
+        if "seen_screenshots" not in self.navigation_state:
+            self.navigation_state["seen_screenshots"] = set()
         
-        # Add navigation warnings to transcription
+        # Check if we've seen this screen before
+        if screenshot_hash in self.navigation_state["seen_screenshots"]:
+            warning = "⚠️  CRITICAL: This screen was seen before - you are revisiting the same screen. STOP scrolling and try a different approach (tap on items, use search, or try alternative navigation)."
+            self._log_print(warning)
+            navigation_warnings.append(warning)
+        else:
+            self.navigation_state["seen_screenshots"].add(screenshot_hash)
+        
+        # Add scroll count warning
+        scroll_count = self.navigation_state.get("scroll_count", 0)
+        if scroll_count >= 5:
+            warning = f"⚠️  WARNING: You have scrolled {scroll_count} times. If you haven't found your target, STOP scrolling and try alternative strategies (tap items to view details, use search, or try different navigation)."
+            navigation_warnings.append(warning)
+        
+        # Only add navigation warnings if present (no automatic screen transcription)
+        # NOTE: The 'transcription' parameter here is ONLY for system warnings, NOT screen transcription
+        # Screen transcription must be explicitly requested via transcribe_screen() tool call
+        
+        # Get current device date
+        current_date = self._get_current_device_date()
+        
+        # Build system info (date + warnings)
+        system_info_parts = []
+        system_info_parts.append(f"<system_info>\nCurrent device date: {current_date}\n</system_info>")
+        
+        transcription = None
         if navigation_warnings:
             warning_text = "\n\n".join(navigation_warnings)
-            if transcription:
-                transcription = f"{transcription}\n\n<system_warnings>\n{warning_text}\n\n🚨 ACTION REQUIRED: You MUST stop scrolling and take a different action. Read the transcription above to extract data, or try a different approach.\n</system_warnings>"
-            else:
-                transcription = f"<system_warnings>\n{warning_text}\n\n🚨 ACTION REQUIRED: You MUST stop scrolling and take a different action.\n</system_warnings>"
+            system_info_parts.append(f"<system_warnings>\n{warning_text}\n\n🚨 ACTION REQUIRED: You MUST stop scrolling and take a different action. Use transcribe_screen() tool if you need to read the screen content.\n</system_warnings>")
+        
+        transcription = "\n\n".join(system_info_parts) if system_info_parts else None
         
         planned_step = self.planner_llm.chat(
             goal if self._step_count == 1 else None,
             screenshot,
             tools=self.planner_tools_dict,
-            transcription=transcription,
+            transcription=transcription,  # Contains date info + warnings
         )
 
         # Show simplified planner step info (not full JSON)
@@ -463,6 +492,24 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                         else:
                             self._log_print(f"⚠️ Scratchpad: Key '{res.get('key')}' not found")
                         self.planner_llm.add_tool_result(tool_call["id"], json.dumps(res))
+                    elif tool_call["function"]["name"] == "transcribe_screen":
+                        current_state = self.get_post_transition_state()
+                        if current_state and current_state.pixels is not None:
+                            current_screenshot = self._resize_screenshot_to_logical_size(current_state.pixels.copy())
+                            transcription = transcribe_screen(current_screenshot)
+                            if transcription:
+                                self._log_print(f"📝 Transcription: {transcription[:200]}...")
+                                self.planner_llm.add_tool_result(
+                                    tool_call["id"], json.dumps({"transcription": transcription})
+                                )
+                            else:
+                                self.planner_llm.add_tool_result(
+                                    tool_call["id"], json.dumps({"transcription": "", "error": "Transcription failed"})
+                                )
+                        else:
+                            self.planner_llm.add_tool_result(
+                                tool_call["id"], json.dumps({"transcription": "", "error": "No screenshot available"})
+                            )
                     else:
                         self.execute_step(tool_call)
                 except Exception as e:
@@ -496,6 +543,9 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
         """Run the executor loop for a single planner tool call and
         send the final result back to the planner via add_tool_result."""
 
+        # Get current device date for executor
+        current_date = self._get_current_device_date()
+        
         DIMENSIONS = f"""\n\n === DIMENSIONS ===
         The screenshot being sent is {self.target_width}x{self.target_height}
         it is {self.target_width} pixels in width.
@@ -505,6 +555,10 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
         Please point to things given its current width and height.
 
         NEVER EXCEED width and height dimensions.
+
+        === SYSTEM INFO ===
+        Current device date: {current_date}
+        Use this date when filtering by date ranges, comparing dates, or understanding relative dates (e.g., "today", "this week", "last 7 days").
 
         """
         executor_llm = AutoDevLLM(
@@ -523,14 +577,55 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
 
         # Track executor steps and results for logging
         executor_step_count = 0
+        steps_for_summary = []  # Collect steps for summary generation
 
         for i in range(MAX_EXECUTOR_STEPS):
             executor_step_count += 1
             state = self.get_post_transition_state()
             screenshot = self._resize_screenshot_to_logical_size(state.pixels.copy())
 
+            # If we're in the last 10 steps, prompt executor to provide summary
+            remaining_steps = MAX_EXECUTOR_STEPS - executor_step_count
+            summary_prompt_addition = ""
+            if remaining_steps <= 10:
+                # Collect previous steps context for summary
+                if steps_for_summary:
+                    steps_text = ""
+                    for step_info in steps_for_summary[-10:]:  # Last 10 steps
+                        steps_text += f"\n--- Step {step_info.get('step_number', '?')} ---\n"
+                        if step_info.get('thinking'):
+                            steps_text += f"Reasoning: {step_info['thinking']}\n"
+                        if step_info.get('tool_calls'):
+                            steps_text += "Actions attempted:\n"
+                            for tc in step_info['tool_calls']:
+                                name = tc.get('name', 'unknown') if isinstance(tc, dict) else getattr(tc, 'name', 'unknown')
+                                args = tc.get('arguments', '') if isinstance(tc, dict) else getattr(tc, 'arguments', '')
+                                steps_text += f"  - {name}"
+                                if args:
+                                    args_str = str(args)[:150]
+                                    steps_text += f" ({args_str}...)" if len(str(args)) > 150 else f" ({args_str})"
+                                steps_text += "\n"
+                        if step_info.get('error'):
+                            steps_text += f"Error: {step_info['error']}\n"
+                
+                summary_prompt_addition = f"""
+
+**IMPORTANT**: You are on step {executor_step_count} of {MAX_EXECUTOR_STEPS}. You have {remaining_steps} steps remaining.
+
+If you cannot complete the task in the remaining steps, you MUST provide a comprehensive summary in your next `report()` call. The summary should be a NARRATIVE (not a list of tool calls) explaining:
+1. What you tried to accomplish
+2. Approach taken (overall strategy and sequence of actions)
+3. What didn't work and why
+4. What you observed on screen
+5. Alternative approaches that could be tried
+
+Previous steps context:
+{steps_text if steps_for_summary else "No previous steps logged"}
+
+If you can still try actions, continue. But if you're stuck or running out of steps, call `report()` with a comprehensive summary NOW."""
+
             execution_step = executor_llm.chat(
-                query if i == 0 else None,
+                (query + summary_prompt_addition) if i == 0 else summary_prompt_addition if summary_prompt_addition else None,
                 screenshot,
                 tools=self.executor_tools_dict,
             )
@@ -581,6 +676,14 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
 
             # Track tool results for logging
             tool_results = []
+            
+            # Store step info for summary generation
+            step_info = {
+                "step_number": executor_step_count,
+                "thinking": execution_step.get("content", ""),
+                "tool_calls": [],
+                "error": None
+            }
 
             if execution_step["tool_calls"]:
                 for exec_call in execution_step["tool_calls"]:
@@ -588,6 +691,12 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                     args = exec_call["function"]["arguments"]
                     if isinstance(args, str):
                         args = json.loads(args)
+                    
+                    # Store tool call info for summary
+                    step_info["tool_calls"].append({
+                        "name": fname,
+                        "arguments": args
+                    })
 
                     # 1) Executor is done: return success back to planner
                     if fname == "report":
@@ -669,6 +778,35 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                         tool_results.append(
                             {"tool_call_id": exec_call["id"], "result": json.dumps(res), "status": "success"}
                         )
+                        continue
+                    
+                    # 4) Transcription tool
+                    if fname == "transcribe_screen":
+                        current_state = self.get_post_transition_state()
+                        if current_state and current_state.pixels is not None:
+                            try:
+                                transcription_result = transcribe_screen(current_state.pixels)
+                                if transcription_result:
+                                    executor_llm.add_tool_result(exec_call["id"], transcription_result)
+                                    tool_results.append(
+                                        {"tool_call_id": exec_call["id"], "result": transcription_result, "status": "success"}
+                                    )
+                                else:
+                                    executor_llm.add_tool_result(exec_call["id"], "Failed to transcribe screen")
+                                    tool_results.append(
+                                        {"tool_call_id": exec_call["id"], "result": "Failed to transcribe screen", "status": "error"}
+                                    )
+                            except Exception as e:
+                                self._log_print(f"⚠️  Transcription error: {e}")
+                                executor_llm.add_tool_result(exec_call["id"], f"Transcription error: {str(e)}")
+                                tool_results.append(
+                                    {"tool_call_id": exec_call["id"], "result": f"Transcription error: {str(e)}", "status": "error"}
+                                )
+                        else:
+                            executor_llm.add_tool_result(exec_call["id"], "No screenshot available")
+                            tool_results.append(
+                                {"tool_call_id": exec_call["id"], "result": "No screenshot available", "status": "error"}
+                            )
                         continue
                     
                     try:
@@ -768,6 +906,7 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                             raise
                     except Exception as e:
                         error_msg = f"Error executing {fname}: {str(e)}"
+                        step_info["error"] = error_msg
                         executor_llm.add_tool_result(exec_call["id"], error_msg)
                         tool_results.append(
                             {"tool_call_id": exec_call["id"], "result": error_msg, "status": "failed"}
@@ -796,8 +935,11 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
                             json.dumps({"status": "failed", "error": error_msg}),
                         )
                         return
+            
+            # Store step info for summary (even if no tool calls)
+            steps_for_summary.append(step_info)
 
-            else:
+            if not execution_step.get("tool_calls"):
                 self._log_print(f"  Executor: ERROR - No tool call returned")
 
                 # Log error state (this is a meaningful completion point)
@@ -830,67 +972,25 @@ class AutoDev(base_agent.EnvironmentInteractingAgent):
         # If we reach here, max executor steps were reached without completion
         self._log_print(f"❌ EXECUTOR ERROR: Max executor steps ({MAX_EXECUTOR_STEPS}) reached for query: {query}")
         
-        # Collect all executor steps for summary
-        all_steps_summary = []
-        if self.enable_logging and self.current_executor_session_id:
-            executor_steps = self.logger.executor_sessions.get(self.current_executor_session_id, [])
-            for step in executor_steps:
-                step_desc = f"Step {step.step_number}: "
-                if step.tool_calls:
-                    tool_names = []
-                    for tc in step.tool_calls:
-                        if isinstance(tc, dict):
-                            name = tc.get("function", {}).get("name", "unknown")
-                        else:
-                            name = getattr(tc, "function", {}).get("name", "unknown") if hasattr(tc, "function") else "unknown"
-                        tool_names.append(name)
-                    step_desc += f"Tried tools: {', '.join(tool_names)}. "
-                if step.thinking:
-                    step_desc += f"Thinking: {step.thinking[:200]}"
-                if step.error_message:
-                    step_desc += f" Error: {step.error_message}"
-                all_steps_summary.append(step_desc)
+        # Check if executor provided summary in last report() call
+        executor_summary = None
+        if steps_for_summary:
+            # Check last few steps for report() calls with summary
+            for step_info in reversed(steps_for_summary[-5:]):  # Check last 5 steps
+                for tc in step_info.get("tool_calls", []):
+                    if tc.get("name") == "report":
+                        report_args = tc.get("arguments", {})
+                        if isinstance(report_args, dict):
+                            notes = report_args.get("notes", "")
+                            if notes and len(notes) > 100:  # Likely a summary if it's long
+                                executor_summary = notes
+                                break
+                if executor_summary:
+                    break
         
-        # Get current screen state for summary
-        current_state = self.get_post_transition_state()
-        current_transcription = transcribe_screen(current_state)
-        
-        # Make final executor LLM call to summarize all attempts (NO TOOLS - text only)
-        summary_prompt = f"""You have reached the maximum number of steps ({MAX_EXECUTOR_STEPS}) while trying to: {query}
-
-You took the following steps:
-{chr(10).join(all_steps_summary) if all_steps_summary else "No steps logged"}
-
-Current screen transcription:
-{current_transcription[:1000] if current_transcription else "No transcription available"}
-
-Please provide a comprehensive summary of:
-1. All the steps you took (what actions you performed)
-2. What you tried to accomplish
-3. What didn't work and why
-4. What you observed on the screen
-5. Any suggestions for alternative approaches
-
-Do NOT make any tool calls - just provide a detailed text summary explaining everything you attempted and why it didn't work."""
-
-        try:
-            # Create a new executor LLM instance with NO TOOLS for summary
-            summary_executor_llm = AutoDevLLM(
-                "anthropic/claude-sonnet-4-5-20250929", 
-                EXECUTOR_SYSTEM_PROMPT + DIMENSIONS, 
-                scratchpad=self.scratchpad
-            )
-            summary_response = summary_executor_llm.chat(
-                summary_prompt,
-                screenshot=None,  # No screenshot needed for summary
-                tools={},  # NO TOOLS - just text response
-            )
-            executor_summary = summary_response.get("content") or ""
-            if not executor_summary:
-                executor_summary = f"Executor took {executor_step_count} steps trying: {query}. All attempts failed."
-        except Exception as summary_error:
-            self._log_print(f"⚠️  Failed to generate executor summary: {summary_error}")
-            executor_summary = f"Failed to generate summary. Executor took {executor_step_count} steps trying: {query}. All attempts failed."
+        # If no summary found in report(), use fallback
+        if not executor_summary:
+            executor_summary = f"Executor took {executor_step_count} steps trying: {query}. All attempts failed. No summary provided by executor."
         
         if self.enable_logging:
             error_state = self.get_post_transition_state()
