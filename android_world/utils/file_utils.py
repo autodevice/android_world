@@ -61,6 +61,8 @@ def convert_to_posix_path(*args):
 TMP_LOCAL_LOCATION = convert_to_posix_path(
     get_local_tmp_directory(), "android_world"
 )
+
+
 @dataclasses.dataclass(frozen=True)
 class FileWithMetadata:
   """File with its metadata like change time.
@@ -389,7 +391,6 @@ def tmp_file_from_device(
     FileNotFoundError: If device_file does not exist.
     RuntimeError: If there is an adb communication error.
   """
-  
   head, tail = os.path.split(device_file)
   dir_and_file_name = convert_to_posix_path(os.path.basename(head), tail)
   local_file = convert_to_posix_path(TMP_LOCAL_LOCATION, dir_and_file_name)

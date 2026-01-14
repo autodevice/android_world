@@ -151,50 +151,23 @@ def delete_all_rows_from_table(
     adb_utils.launch_app(app_name, env.controller)
     time.sleep(7.0)
 
-  try:
-    with env.controller.pull_file(
-        remote_db_file_path, timeout_sec
-    ) as local_db_directory:
-      local_db_path = file_utils.convert_to_posix_path(
-          local_db_directory, os.path.split(remote_db_file_path)[1]
-      )
+  with env.controller.pull_file(
+      remote_db_file_path, timeout_sec
+  ) as local_db_directory:
+    local_db_path = file_utils.convert_to_posix_path(
+        local_db_directory, os.path.split(remote_db_file_path)[1]
+    )
 
-      conn = sqlite3.connect(local_db_path)
-      cursor = conn.cursor()
-      delete_command = f"DELETE FROM {table_name}"
-      cursor.execute(delete_command)
-      conn.commit()
-      conn.close()
-      env.controller.push_file(local_db_path, remote_db_file_path, timeout_sec)
-      adb_utils.close_app(
-          app_name, env.controller
-      )  # Close app to register the changes.
-  except sqlite3.OperationalError as e:
-    error_str = str(e).lower()
-    if "fts4" in error_str or "fts3" in error_str or "no such module" in error_str:
-      try:
-        delete_command = f"DELETE FROM {table_name}"
-        adb_utils.execute_sql_command(remote_db_file_path, delete_command, env.controller.env)
-        adb_utils.close_app(app_name, env.controller)
-      except Exception as adb_error:
-        adb_error_str = str(adb_error).lower()
-        if "malformed database schema" in adb_error_str or "trigger" in adb_error_str or "constraint" in adb_error_str or "syntax error" in adb_error_str:
-          try:
-            try:
-              adb_utils.issue_generic_request(["shell", f"rm -f {remote_db_file_path}"], env.controller.env)
-              adb_utils.issue_generic_request(["shell", f"rm -f {remote_db_file_path}-wal"], env.controller.env)
-              adb_utils.issue_generic_request(["shell", f"rm -f {remote_db_file_path}-shm"], env.controller.env)
-            except Exception:
-              pass
-            adb_utils.launch_app(app_name, env.controller)
-            time.sleep(3.0)
-            adb_utils.close_app(app_name, env.controller)
-          except Exception as delete_error:
-            raise RuntimeError(f"Failed to delete from {table_name} due to malformed database schema. Tried deleting database file but failed. Original error: {str(adb_error)}, Delete error: {str(delete_error)}")
-        else:
-          raise
-    else:
-      raise
+    conn = sqlite3.connect(local_db_path)
+    cursor = conn.cursor()
+    delete_command = f"DELETE FROM {table_name}"
+    cursor.execute(delete_command)
+    conn.commit()
+    conn.close()
+    env.controller.push_file(local_db_path, remote_db_file_path, timeout_sec)
+    adb_utils.close_app(
+        app_name, env.controller
+    )  # Close app to register the changes.
 
 
 def insert_rows_to_remote_db(
@@ -218,38 +191,22 @@ def insert_rows_to_remote_db(
     env: The environment.
     timeout_sec: Optional timeout in seconds for the database copy operation.
   """
-  try:
-    with env.controller.pull_file(
-        remote_db_file_path, timeout_sec
-    ) as local_db_directory:
-      local_db_path = file_utils.convert_to_posix_path(
-          local_db_directory, os.path.split(remote_db_file_path)[1]
+  with env.controller.pull_file(
+      remote_db_file_path, timeout_sec
+  ) as local_db_directory:
+    local_db_path = file_utils.convert_to_posix_path(
+        local_db_directory, os.path.split(remote_db_file_path)[1]
+    )
+
+    conn = sqlite3.connect(local_db_path)
+    cursor = conn.cursor()
+    for row in rows:
+      insert_command, values = sqlite_schema_utils.insert_into_db(
+          row, table_name, exclude_key
       )
+      cursor.execute(insert_command, values)
+    conn.commit()
+    conn.close()
 
-      conn = sqlite3.connect(local_db_path)
-      cursor = conn.cursor()
-      for row in rows:
-        insert_command, values = sqlite_schema_utils.insert_into_db(
-            row, table_name, exclude_key
-        )
-        cursor.execute(insert_command, values)
-      conn.commit()
-      conn.close()
-
-      env.controller.push_file(local_db_path, remote_db_file_path, timeout_sec)
-      adb_utils.close_app(app_name, env.controller)
-  except sqlite3.OperationalError as e:
-    if "fts4" in str(e).lower() or "no such module" in str(e).lower():
-      for row in rows:
-        insert_command, values = sqlite_schema_utils.insert_into_db(
-            row, table_name, exclude_key
-        )
-        escaped_values = tuple(
-            str(v).replace("'", "''") if isinstance(v, str) else str(v)
-            for v in values
-        )
-        final_insert = insert_command.replace('?', "'{}'").format(*escaped_values)
-        adb_utils.execute_sql_command(remote_db_file_path, final_insert, env.controller.env)
-      adb_utils.close_app(app_name, env.controller)
-    else:
-      raise
+    env.controller.push_file(local_db_path, remote_db_file_path, timeout_sec)
+    adb_utils.close_app(app_name, env.controller)
