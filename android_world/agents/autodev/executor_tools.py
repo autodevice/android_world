@@ -96,7 +96,7 @@ def scroll(
 
 def swipe(
     direction: str, x: Optional[int] = None, y: Optional[int] = None
-) -> JSONAction:
+    ) -> JSONAction:
     """Create a swipe action in the specified direction.
     You may scroll tiny amounts by using swipe instead.
     For example, to scroll down, swipe the screen up from the upper half of the screen.
@@ -120,10 +120,43 @@ def swipe(
         raise ValueError(
             f"Direction must be one of {valid_directions}, got: {direction}"
         )
-
+    
     scaled_x = int(int(x) / SCALE) if x is not None else None
     scaled_y = int(int(y) / SCALE) if y is not None else None
     return JSONAction(action_type="swipe", direction=direction, x=scaled_x, y=scaled_y)
+
+
+def swipe_coords(
+    start_x: int, start_y: int, end_x: int, end_y: int
+) -> JSONAction:
+    """Create a swipe action with explicit start and end coordinates.
+    
+    This gives precise control over the swipe path. The coordinates are in logical
+    screen space and will be scaled appropriately.
+    
+    Args:
+        start_x: X coordinate where the swipe starts
+        start_y: Y coordinate where the swipe starts
+        end_x: X coordinate where the swipe ends
+        end_y: Y coordinate where the swipe ends
+    
+    Example:
+        >>> swipe_coords(100, 1200, 800, 1200)
+        # Swipes horizontally from (100, 1200) to (800, 1200)
+    """
+    scaled_start_x = int(int(start_x) / SCALE)
+    scaled_start_y = int(int(start_y) / SCALE)
+    scaled_end_x = int(int(end_x) / SCALE)
+    scaled_end_y = int(int(end_y) / SCALE)
+    
+    action = JSONAction(
+        action_type="swipe", 
+        x=scaled_start_x,
+        y=scaled_start_y,
+    )
+    action.end_x = scaled_end_x
+    action.end_y = scaled_end_y
+    return action
 
 
 def input_text(
@@ -273,6 +306,28 @@ def extracted_data(data: str):
     If you have been tasked with extracting data from a screen, you may use this function to return that data.
     Please send the data in a structured format that can be effectively used.
     """
+
+
+def transcribe_screen() -> str:
+    """Transcribe all text and UI elements visible on the current screen.
+    
+    This tool provides a complete transcription of the current screen, including:
+    - All visible text content
+    - UI elements (buttons, icons, text fields, etc.)
+    - Labels and descriptions
+    - Any other readable content
+    
+    Use this when you need to:
+    - Read file content
+    - Extract list items
+    - Read form fields, search results, or any text on screen
+    - Find UI elements and their labels (buttons, icons, text fields)
+    - Understand the current screen state
+    
+    Returns:
+        A complete transcription of the current screen as a string.
+    """
+    pass
 
 
 def report(notes: str):

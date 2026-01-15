@@ -28,10 +28,11 @@ from absl import app
 from absl import flags
 from absl import logging
 from android_world import registry
-from android_world.agents import infer
-from android_world.agents import t3a
+from android_world.agents import autodev_agent
 from android_world.env import env_launcher
 from android_world.task_evals import task_eval
+from android_world.task_evals.information_retrieval import information_retrieval
+from android_world.task_evals.information_retrieval import proto_utils
 
 logging.set_verbosity(logging.WARNING)
 
@@ -104,20 +105,52 @@ def _main() -> None:
   params = task_type.generate_random_params()
   task = task_type(params)
   task.initialize_task(env)
-  agent = t3a.T3A(env, infer.Gpt4Wrapper('gpt-5-nano-2025-08-07'))
+  
+  # Print expected answer if this is an InformationRetrieval task
+  if isinstance(task, information_retrieval.InformationRetrieval):
+    try:
+      expected_answer = proto_utils.get_expected_answer(task.task)
+      print(f'Expected answer: {expected_answer}')
+    except Exception as e:
+      print(f'Could not get expected answer: {e}')
+  
+  # Use AutoDev agent with logging enabled
+  task_name = task_type.__name__
+  agent = autodev_agent.AutoDev(
+      env,
+      name="autodev",
+      enable_logging=True,
+      task_name=task_name,
+  )
 
   print('Goal: ' + str(task.goal))
   is_done = False
+  
   for _ in range(int(task.complexity * 10)):
     response = agent.step(task.goal)
+    
     if response.done:
       is_done = True
       break
-  agent_successful = is_done and task.is_successful(env) == 1
+  
+  # Check validation and log debugging info (handled by AutoDev agent)
+  success_score = agent.log_task_validation(task, env)
+  agent_successful = is_done and success_score == 1.0
+  
+  # Update logger with success status
+  if agent.enable_logging and agent.logger:
+    agent.logger.set_success(
+        success=agent_successful,
+        reason=f"Task {'completed successfully' if agent_successful else 'failed'}"
+    )
+    agent.logger.end_run(status="completed")
+  
   print(
       f'{"Task Successful ✅" if agent_successful else "Task Failed ❌"};'
       f' {task.goal}'
   )
+  if agent.enable_logging and agent.logger:
+    print(f"📝 Logs saved to: {agent.logger.current_run_dir}")
   env.close()
 
 

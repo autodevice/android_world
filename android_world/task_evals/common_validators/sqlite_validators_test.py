@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sqlite3
+import pysqlite3 as sqlite3
 from absl.testing import absltest
 from android_world.task_evals.common_validators import sqlite_validators
 from android_world.task_evals.utils import sqlite_schema_utils
