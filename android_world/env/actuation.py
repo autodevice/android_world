@@ -176,6 +176,9 @@ def execute_adb_action(
     elif action.action_type == "swipe":  # Inverse of scroll.
         screen_width, screen_height = screen_size
         
+        # Support precise coordinate-based swipes: previously swipe could start from any point
+        # but ended at screen middle based on direction. Now supports explicit end_x/end_y
+        # for precise control (e.g., horizontal scrolling in category rows, custom swipe distances).
         if hasattr(action, 'end_x') and hasattr(action, 'end_y'):
             start_x = action.x
             start_y = action.y
